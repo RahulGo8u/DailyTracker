@@ -1,7 +1,7 @@
 import secrets
 from datetime import timedelta
 
-from fastapi import APIRouter, Cookie, Depends, HTTPException
+from fastapi import APIRouter, Cookie, Depends, HTTPException, Request
 from pymongo.errors import BulkWriteError, DuplicateKeyError
 from fastapi.responses import JSONResponse
 from google.auth.transport import requests as google_requests
@@ -14,6 +14,11 @@ from app.schemas import GoogleLogin
 from app.util import now_utc, public_user
 
 router = APIRouter(prefix="/api/auth", tags=["auth"])
+
+
+def _is_https(request: Request) -> bool:
+    forwarded = request.headers.get("x-forwarded-proto", "")
+    return request.url.scheme == "https" or forwarded.split(",")[0].strip() == "https"
 
 DEFAULT_CATEGORIES = [
     "Office Work",
@@ -47,7 +52,7 @@ def seed_categories(db, user_id) -> None:
 
 
 @router.post("/google")
-def login_with_google(body: GoogleLogin):
+def login_with_google(body: GoogleLogin, request: Request):
     try:
         info = id_token.verify_oauth2_token(
             body.credential,
@@ -97,6 +102,7 @@ def login_with_google(body: GoogleLogin):
         key="session",
         value=token,
         httponly=True,
+        secure=_is_https(request),
         samesite="lax",
         max_age=settings.session_days * 24 * 60 * 60,
         path="/",
@@ -110,9 +116,9 @@ def me(user: dict = Depends(get_current_user)):
 
 
 @router.post("/logout")
-def logout(session: str | None = Cookie(default=None)):
+def logout(request: Request, session: str | None = Cookie(default=None)):
     if session:
         get_db().sessions.delete_one({"_id": session})
     response = JSONResponse({"ok": True})
-    response.delete_cookie("session", path="/", samesite="lax")
+    response.delete_cookie("session", path="/", samesite="lax", secure=_is_https(request), httponly=True)
     return response
